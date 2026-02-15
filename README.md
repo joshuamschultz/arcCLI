@@ -1,6 +1,6 @@
 # Arc CLI
 
-Unified command-line interface for Arc products. Currently supports [ArcLLM](https://github.com/joshuamschultz/arcllm) for multi-provider LLM operations.
+Unified command-line interface for the Arc stack: [ArcLLM](https://github.com/joshuamschultz/arcllm) (provider-agnostic LLM calls), [ArcRun](https://github.com/joshuamschultz/arcrun) (agentic runtime loop), and ArcAgent (agent orchestration).
 
 ## Installation
 
@@ -8,99 +8,94 @@ Unified command-line interface for Arc products. Currently supports [ArcLLM](htt
 pip install arccli
 ```
 
-Development install:
+Development install (install dependencies first):
 
 ```bash
-pip install -e /path/to/arcllm    # dependency first
+pip install -e /path/to/arcllm
+pip install -e /path/to/arcrun
 pip install -e /path/to/arccli
 ```
 
 ## Quick Start
 
 ```bash
-# List providers and models
-arc llm providers
-arc llm models
+# --- LLM ---
+arc llm providers                         # list providers
+arc llm call anthropic "Hello"            # make an LLM call
 
-# Inspect a provider
-arc llm provider anthropic
+# --- Agent ---
+arc agent create my-agent                 # scaffold agent directory
+arc agent build my-agent                  # interactive onboarding wizard
+arc agent chat my-agent                   # interactive REPL
+arc agent chat my-agent --task "2+2?"     # one-shot task
 
-# Make a call
-arc llm call anthropic "What is the capital of France?"
-
-# Validate your setup
-arc llm validate
+# --- Run (no agent directory needed) ---
+arc run task "What is 2+2?" --with-calc   # one-shot with tools
+arc run exec "print(2 + 2)"              # sandboxed Python execution
+arc run version                           # show arcrun info
 ```
 
-## Commands
+## Command Groups
+
+| Group | Purpose |
+|-------|---------|
+| `arc llm` | LLM provider management, model discovery, direct calls |
+| `arc agent` | Agent lifecycle — create, configure, run, inspect |
+| `arc run` | Direct arcrun execution without an agent directory |
+
+## `arc llm`
 
 | Command | Description |
 |---------|-------------|
+| `arc llm version` | Show version info |
+| `arc llm config` | Show global ArcLLM configuration |
 | `arc llm providers` | List all available providers |
 | `arc llm provider NAME` | Show provider details and models |
 | `arc llm models` | List all models across providers |
 | `arc llm call PROVIDER PROMPT` | Make an LLM call |
-| `arc llm config` | Show global ArcLLM configuration |
 | `arc llm validate` | Validate configs and API keys |
-| `arc llm version` | Show version info |
 
-Every command supports `--json` for machine-readable output.
+## `arc agent`
 
-### Making Calls
+| Command | Description |
+|---------|-------------|
+| `arc agent create NAME` | Scaffold a new agent directory |
+| `arc agent build [PATH]` | Interactive onboarding wizard (or `--check` to validate) |
+| `arc agent chat [PATH]` | Interactive REPL or one-shot (`--task`) |
+| `arc agent tools [PATH]` | List all tools available to an agent |
+| `arc agent config [PATH]` | Show agent configuration |
+| `arc agent strategies` | List available execution strategies |
+| `arc agent events` | List all event types emitted by arcrun |
 
-```bash
-# Basic call
-arc llm call anthropic "Explain TCP in one sentence"
+## `arc run`
 
-# Override model and parameters
-arc llm call anthropic "Summarize this" \
-  --model claude-haiku-4-5-20251001 \
-  --temperature 0.3 \
-  --max-tokens 100 \
-  --system "Be concise"
+| Command | Description |
+|---------|-------------|
+| `arc run task PROMPT` | Run a one-shot task with arcrun directly |
+| `arc run exec CODE` | Execute Python code in a sandboxed subprocess |
+| `arc run version` | Show arcrun/arcllm versions and capabilities |
 
-# With usage details
-arc llm call anthropic "Hello" --telemetry --verbose
+Every command supports `--json` for machine-readable output. Full reference: [docs/CLI.md](docs/CLI.md).
 
-# Full JSON response for scripting
-arc llm call anthropic "Hello" --json
+## Agent Directory Structure
+
 ```
-
-#### Module Flags
-
-Toggle modules per call (defaults come from config):
-
-| Flag | Description |
-|------|-------------|
-| `--retry` / `--no-retry` | Retry with exponential backoff |
-| `--fallback` / `--no-fallback` | Fallback to alternate providers |
-| `--rate-limit` / `--no-rate-limit` | Token bucket rate limiting |
-| `--telemetry` / `--no-telemetry` | Cost and timing tracking |
-| `--audit` / `--no-audit` | Audit metadata logging |
-| `--security` / `--no-security` | PII redaction + request signing |
-| `--otel` / `--no-otel` | OpenTelemetry distributed tracing |
-
-### Filtering Models
-
-```bash
-arc llm models --provider anthropic    # by provider
-arc llm models --tools                 # tool-use capable
-arc llm models --vision                # vision capable
-```
-
-## Extensibility
-
-The `arc` namespace is designed for future products:
-
-```bash
-arc run ...      # ArcRun
-arc agent ...    # ArcAgent
+my-agent/
+  arcagent.toml          # Agent configuration (model, tools policy, telemetry)
+  workspace/
+    identity.md          # System prompt (required)
+    policy.md            # Behavioral constraints (optional)
+    context.md           # Additional context (optional)
+  tools/
+    __init__.py
+    example.py           # Tool definitions (exports get_tools())
 ```
 
 ## Requirements
 
 - Python >= 3.11
 - [arcllm](https://github.com/joshuamschultz/arcllm)
+- [arcrun](https://github.com/joshuamschultz/arcrun)
 
 ## License
 
