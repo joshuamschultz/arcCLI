@@ -74,6 +74,24 @@ export_traces = false
 
 [context]
 max_tokens = 128000
+
+[eval]
+provider = ""
+model = ""
+max_tokens = 1024
+temperature = 0.2
+fallback_behavior = "skip"
+
+[memory]
+context_budget_tokens = 2000
+entity_extraction_enabled = false
+
+[session]
+retention_count = 50
+retention_days = 30
+
+[extensions]
+global_dir = "~/.arcagent/extensions"
 """
 
 _DEFAULT_POLICY = """\
@@ -90,6 +108,81 @@ _DEFAULT_CONTEXT = """\
 
 Working memory for the agent. Updated during conversations.
 """
+
+
+_CALCULATOR_EXTENSION = '''\
+"""Extension: calculator
+
+Registers a safe math calculator tool with ArcAgent.
+"""
+
+from __future__ import annotations
+
+import ast
+import operator
+
+
+def extension(api):
+    """Factory function called by ExtensionLoader."""
+    from arcrun import Tool, ToolContext
+
+    _OPS = {
+        ast.Add: operator.add,
+        ast.Sub: operator.sub,
+        ast.Mult: operator.mul,
+        ast.Div: operator.truediv,
+        ast.Mod: operator.mod,
+        ast.Pow: operator.pow,
+        ast.USub: operator.neg,
+        ast.UAdd: operator.pos,
+    }
+
+    def _safe_eval(node: ast.AST) -> float:
+        """Recursively evaluate an AST math expression."""
+        if isinstance(node, ast.Expression):
+            return _safe_eval(node.body)
+        if isinstance(node, ast.Constant) and isinstance(node.value, (int, float)):
+            return node.value
+        if isinstance(node, ast.BinOp):
+            op_fn = _OPS.get(type(node.op))
+            if op_fn is None:
+                raise ValueError(f"Unsupported operator: {type(node.op).__name__}")
+            return op_fn(_safe_eval(node.left), _safe_eval(node.right))
+        if isinstance(node, ast.UnaryOp):
+            op_fn = _OPS.get(type(node.op))
+            if op_fn is None:
+                raise ValueError(f"Unsupported operator: {type(node.op).__name__}")
+            return op_fn(_safe_eval(node.operand))
+        raise ValueError(f"Unsupported expression: {ast.dump(node)}")
+
+    async def calculate(params: dict, ctx: ToolContext) -> str:
+        """Evaluate a math expression safely using AST parsing."""
+        expr = params["expression"]
+        try:
+            tree = ast.parse(expr, mode="eval")
+            result = _safe_eval(tree)
+            return str(result)
+        except Exception as e:
+            return f"Error: {e}"
+
+    api.register_tool(
+        Tool(
+            name="calculate",
+            description="Evaluate a math expression. Supports +, -, *, /, %, **.",
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "expression": {
+                        "type": "string",
+                        "description": "Math expression to evaluate",
+                    },
+                },
+                "required": ["expression"],
+            },
+            execute=calculate,
+        )
+    )
+'''
 
 
 def _load_env() -> None:
@@ -220,6 +313,8 @@ def _scaffold_workspace(agent_dir: Path, name: str) -> None:
 
     # Workspace subdirectories
     for subdir in [
+        "notes",
+        "entities",
         "skills",
         "skills/_agent-created",
         "extensions",
@@ -229,6 +324,8 @@ def _scaffold_workspace(agent_dir: Path, name: str) -> None:
         "library/scripts",
         "library/templates",
         "library/prompts",
+        "library/data",
+        "library/snippets",
     ]:
         (workspace / subdir).mkdir(parents=True, exist_ok=True)
 
@@ -299,6 +396,11 @@ def init(path: str, name: str | None, model: str, interactive: bool) -> None:
 
     _scaffold_workspace(agent_dir, agent_name)
 
+    # Write calculator extension if not present
+    ext_path = agent_dir / "workspace" / "extensions" / "calculator.py"
+    if not ext_path.exists():
+        ext_path.write_text(_CALCULATOR_EXTENSION)
+
     click_echo(f"Initialized agent workspace: {agent_dir}")
     click_echo()
     click_echo("Structure:")
@@ -306,8 +408,12 @@ def init(path: str, name: str | None, model: str, interactive: bool) -> None:
     click_echo(f"    arcagent.toml")
     click_echo(f"    workspace/")
     click_echo(f"      identity.md, policy.md, context.md")
-    click_echo(f"      skills/, extensions/, sessions/, archive/")
-    click_echo(f"      library/scripts/, templates/, prompts/")
+    click_echo(f"      notes/, entities/")
+    click_echo(f"      skills/, skills/_agent-created/")
+    click_echo(f"      extensions/")
+    click_echo(f"        calculator.py")
+    click_echo(f"      sessions/, archive/")
+    click_echo(f"      library/scripts/, templates/, prompts/, data/, snippets/")
     click_echo(f"    tools/")
     click_echo()
     click_echo("Next steps:")
@@ -328,7 +434,8 @@ def init(path: str, name: str | None, model: str, interactive: bool) -> None:
 def create(name: str, parent_dir: str, model: str, with_code_exec: bool) -> None:
     """Scaffold a new agent directory with example tools.
 
-    Creates NAME/ with arcagent.toml, full workspace structure, and tools/.
+    Creates NAME/ with arcagent.toml, full workspace structure,
+    an extension-based calculator tool, and tools/ directory.
     """
     parent = Path(parent_dir).expanduser().resolve()
     agent_dir = parent / name
@@ -350,66 +457,24 @@ def create(name: str, parent_dir: str, model: str, with_code_exec: bool) -> None
     # Scaffold full workspace
     _scaffold_workspace(agent_dir, name)
 
-    # Write example tool
-    tool_source = textwrap.dedent("""\
-        \"\"\"Example tools for the agent.\"\"\"
-
-        from __future__ import annotations
-
-        import json
-
-        from arcrun import Tool, ToolContext
-
-
-        async def calculate(params: dict, ctx: ToolContext) -> str:
-            \"\"\"Evaluate a math expression safely.\"\"\"
-            expr = params["expression"]
-            allowed = set("0123456789+-*/().% ")
-            if not all(c in allowed for c in expr):
-                return "Error: expression contains disallowed characters"
-            try:
-                result = eval(expr)  # noqa: S307
-                return str(result)
-            except Exception as e:
-                return f"Error: {e}"
-
-
-        def get_tools() -> list[Tool]:
-            \"\"\"Return all tools defined in this module.\"\"\"
-            tools = [
-                Tool(
-                    name="calculate",
-                    description="Evaluate a math expression. Supports +, -, *, /, (), %.",
-                    input_schema={
-                        "type": "object",
-                        "properties": {
-                            "expression": {
-                                "type": "string",
-                                "description": "Math expression to evaluate",
-                            },
-                        },
-                        "required": ["expression"],
-                    },
-                    execute=calculate,
-                ),
-            ]
-    """)
-
-    if with_code_exec:
-        tool_source += "    from arcrun import make_execute_tool\n"
-        tool_source += "    tools.append(make_execute_tool(timeout_seconds=30))\n"
-
-    tool_source += "    return tools\n"
-
-    (agent_dir / "tools" / "example.py").write_text(tool_source)
+    # Write calculator extension (arcagent extension pattern)
+    ext_path = agent_dir / "workspace" / "extensions" / "calculator.py"
+    ext_path.write_text(_CALCULATOR_EXTENSION)
 
     click_echo(f"Created agent: {agent_dir}")
     click_echo()
     click_echo("Structure:")
     click_echo(f"  {name}/")
-    click_echo(f"    arcagent.toml          # Agent config")
-    click_echo(f"    workspace/             # Identity, policy, context, skills, extensions")
-    click_echo(f"    tools/example.py       # Tool definitions")
+    click_echo(f"    arcagent.toml")
+    click_echo(f"    workspace/")
+    click_echo(f"      identity.md, policy.md, context.md")
+    click_echo(f"      notes/, entities/")
+    click_echo(f"      skills/, skills/_agent-created/")
+    click_echo(f"      extensions/")
+    click_echo(f"        calculator.py")
+    click_echo(f"      sessions/, archive/")
+    click_echo(f"      library/scripts/, templates/, prompts/, data/, snippets/")
+    click_echo(f"    tools/")
     click_echo()
     click_echo("Next steps:")
     click_echo(f"  arc agent build {agent_dir}")
@@ -641,6 +706,24 @@ export_traces = false
 
 [context]
 max_tokens = {context_max}
+
+[eval]
+provider = ""
+model = ""
+max_tokens = 1024
+temperature = 0.2
+fallback_behavior = "skip"
+
+[memory]
+context_budget_tokens = 2000
+entity_extraction_enabled = false
+
+[session]
+retention_count = 50
+retention_days = 30
+
+[extensions]
+global_dir = "~/.arcagent/extensions"
 """
     config_path.write_text(config_toml)
 
